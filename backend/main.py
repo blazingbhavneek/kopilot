@@ -97,6 +97,32 @@ def get_time_range_for_system(system: str) -> str:
     """Get time range based on working system"""
     return WORKING_SYSTEMS.get(system, "8:45-17:15")
 
+def generate_realistic_times(working_system: str) -> tuple[str, str]:
+    """Generate realistic start and end times with random variations near the expected times"""
+    # Get base times for the system
+    time_range = get_time_range_for_system(working_system)
+    expected_start, expected_end = time_range.split('-')
+    exp_start_hour, exp_start_min = int(expected_start.split(':')[0]), int(expected_start.split(':')[1])
+    exp_end_hour, exp_end_min = int(expected_end.split(':')[0]), int(expected_end.split(':')[1])
+    
+    # Generate start time with slight variation (-5 to +10 minutes)
+    start_variation = randint(-5, 10)
+    start_total_min = exp_start_hour * 60 + exp_start_min + start_variation
+    start_hour = start_total_min // 60
+    start_min = start_total_min % 60
+    start_time = f"{start_hour:02d}{start_min:02d}"
+    
+    # Generate end time with variation (-5 to +120 minutes for possible overtime)
+    # Most common: on time or slightly late
+    end_variation_options = [-5, 0, 0, 0, 5, 10, 15, 30, 45, 60, 90, 120]
+    end_variation = choice(end_variation_options)
+    end_total_min = exp_end_hour * 60 + exp_end_min + end_variation
+    end_hour = end_total_min // 60
+    end_min = end_total_min % 60
+    end_time = f"{end_hour:02d}{end_min:02d}"
+    
+    return start_time, end_time
+
 def calculate_rest_time(start: str, end: str, working_system: str = "A") -> int:
     """Calculate rest time in minutes based on working hours and system"""
     if not start or not end:
@@ -214,25 +240,14 @@ def generate_random_attendance_entry(date_obj: datetime, entry_id: int) -> Atten
     # Random working system
     working_system = choice(['A', 'A', 'A', 'B', 'C'])  # A is most common
     
-    # Generate random times based on category
+    # Generate times based on category
     if category == '休暇' or category == '':
         start_time = ""
         end_time = ""
         state = ""
     else:
-        # Random start time (slight variations)
-        if working_system == 'A':
-            start_options = ['0840', '0845', '0850', '0900']
-            end_options = ['1710', '1715', '1730', '1800', '1900']
-        elif working_system == 'B':
-            start_options = ['0855', '0900', '0905', '0910']
-            end_options = ['1755', '1800', '1830', '1900', '2000']
-        else:  # C
-            start_options = ['0655', '0700', '0705', '0710']
-            end_options = ['1555', '1600', '1630', '1700']
-        
-        start_time = choice(start_options)
-        end_time = choice(end_options)
+        # Generate realistic times with variations
+        start_time, end_time = generate_realistic_times(working_system)
         
         # Random state (some approved, some pending, some empty)
         state = choice(['承認済', '承認済', '未承認', ''])
@@ -506,6 +521,13 @@ async def register_attendance(date: str):
         if entry.date == date:
             entry.category = "通常"
             entry.state = ""
+            
+            # If no times are set, generate realistic default times based on working system
+            if not entry.start_time or not entry.end_time:
+                start_time, end_time = generate_realistic_times(entry.working_system)
+                entry.start_time = start_time
+                entry.end_time = end_time
+                entry = calculate_times(entry)
             
             key = f"{year}-{month:02d}-{half}"
             memory_storage[key] = entries

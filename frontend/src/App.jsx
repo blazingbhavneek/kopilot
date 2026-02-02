@@ -145,8 +145,17 @@ function App() {
 
   const handleRegister = async (date) => {
     try {
-      await fetch(`${API_URL}/attendance/${date}/register`, { method: 'POST' });
-      loadData();
+      const response = await fetch(`${API_URL}/attendance/${date}/register`, { method: 'POST' });
+      const result = await response.json();
+      
+      // Update local state with the registered entry
+      setAttendanceData(prevData => 
+        prevData.map(entry => 
+          entry.date === date 
+            ? result.entry
+            : entry
+        )
+      );
     } catch (error) {
       console.error('Error registering:', error);
     }
@@ -154,8 +163,17 @@ function App() {
 
   const handleHoliday = async (date) => {
     try {
-      await fetch(`${API_URL}/attendance/${date}/holiday`, { method: 'POST' });
-      loadData();
+      const response = await fetch(`${API_URL}/attendance/${date}/holiday`, { method: 'POST' });
+      const result = await response.json();
+      
+      // Update local state with the holiday entry
+      setAttendanceData(prevData => 
+        prevData.map(entry => 
+          entry.date === date 
+            ? result.entry
+            : entry
+        )
+      );
     } catch (error) {
       console.error('Error registering holiday:', error);
     }
@@ -463,7 +481,11 @@ function App() {
                               const value = e.target.value.replace(/\D/g, '').slice(0, 4);
                               handleInputChange(entry.date, 'start_time', value);
                             }}
-                            placeholder="0845"
+                            placeholder={
+                              entry.working_system === 'A' ? '0845' :
+                              entry.working_system === 'B' ? '0900' :
+                              entry.working_system === 'C' ? '0700' : '0845'
+                            }
                             maxLength="4"
                             className="w-[70px] px-2 py-1.5 border border-gray-300 rounded text-center font-mono text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
                           />
@@ -478,7 +500,11 @@ function App() {
                               const value = e.target.value.replace(/\D/g, '').slice(0, 4);
                               handleInputChange(entry.date, 'end_time', value);
                             }}
-                            placeholder="1715"
+                            placeholder={
+                              entry.working_system === 'A' ? '1715' :
+                              entry.working_system === 'B' ? '1800' :
+                              entry.working_system === 'C' ? '1600' : '1715'
+                            }
                             maxLength="4"
                             className="w-[70px] px-2 py-1.5 border border-gray-300 rounded text-center font-mono text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
                           />
