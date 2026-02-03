@@ -100,34 +100,47 @@ function App() {
     loadData();
   }, [currentDate, half]);
 
-const loadData = async () => {
-  setLoading(true);
-  try {
-    const year = currentDate.getFullYear();
-    const month = currentDate.getMonth() + 1;
-    
-    const [attendanceRes, employeeRes] = await Promise.all([
-      fetch(`${API_URL}/attendance/${year}/${month}/${half}`),
-      fetch(`${API_URL}/employee`)
-    ]);
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const year = currentDate.getFullYear();
+      const month = currentDate.getMonth() + 1;
 
-    let attendance = await attendanceRes.json();
-    const employee = await employeeRes.json();
+      const [attendanceRes, employeeRes] = await Promise.all([
+        fetch(`${API_URL}/attendance/period`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ year, month, half })
+        }),
+        fetch(`${API_URL}/employee`)
+      ]);
 
-    // Ensure entries with categories have pending state
-    attendance = attendance.map(entry => ({
-      ...entry,
-      state: entry.category ? (entry.state || '未承認') : entry.state
-    }));
+      let attendance = await attendanceRes.json();
+      const employee = await employeeRes.json();
 
-    setAttendanceData(attendance);
-    setEmployeeInfo(employee);
-  } catch (error) {
-    console.error('Error loading data:', error);
-  } finally {
-    setLoading(false);
-  }
-};
+      // Transform int fields to display format
+      attendance = attendance.map(entry => ({
+        ...entry,
+        // Create display date string from int fields
+        date: `${entry.date_year}-${String(entry.date_month).padStart(2, '0')}-${String(entry.date_day).padStart(2, '0')}`,
+        // Create display time strings from int fields
+        start_time: entry.start_hour !== null && entry.start_minute !== null
+          ? `${String(entry.start_hour).padStart(2, '0')}${String(entry.start_minute).padStart(2, '0')}`
+          : '',
+        end_time: entry.end_hour !== null && entry.end_minute !== null
+          ? `${String(entry.end_hour).padStart(2, '0')}${String(entry.end_minute).padStart(2, '0')}`
+          : '',
+        state: entry.category ? (entry.state || '未承認') : entry.state
+      }));
+
+      setAttendanceData(attendance);
+      setEmployeeInfo(employee);
+    } catch (error) {
+      console.error('Error loading data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const navigateHalf = (direction) => {
     const newDate = new Date(currentDate);
@@ -149,107 +162,162 @@ const loadData = async () => {
     setCurrentDate(newDate);
   };
 
-const handleRegister = async (date) => {
-  // Check if date is today or future
-  const today = new Date().toISOString().split('T')[0];
-  if (new Date(date) > new Date(today)) {
-    alert('Cannot apply for future dates');
-    return;
-  }
+  const handleRegister = async (entry) => {
+    const today = new Date();
+    const entryDate = new Date(entry.date_year, entry.date_month - 1, entry.date_day);
 
-  try {
-    const response = await fetch(`${API_URL}/attendance/${date}/register`, { method: 'POST' });
-    const result = await response.json();
-    
-    // Ensure state is set to pending after registration
-    const updatedEntry = {
-      ...result.entry,
-      state: result.entry.state || '未承認' // Set to pending if not already set
-    };
-    
-    // Update local state with the registered entry
-    setAttendanceData(prevData => 
-      prevData.map(entry => 
-        entry.date === date 
-          ? updatedEntry
-          : entry
-      )
-    );
-  } catch (error) {
-    console.error('Error registering:', error);
-  }
-};
+    if (entryDate > today) {
+      alert('Cannot apply for future dates');
+      return;
+    }
 
-const handleHoliday = async (date) => {
-  // Check if date is today or future
-  const today = new Date().toISOString().split('T')[0];
-  if (new Date(date) > new Date(today)) {
-    alert('Cannot apply for future dates');
-    return;
-  }
-
-  try {
-    const response = await fetch(`${API_URL}/attendance/${date}/holiday`, { method: 'POST' });
-    const result = await response.json();
-    
-    // Ensure state is set to pending after holiday registration
-    const updatedEntry = {
-      ...result.entry,
-      state: result.entry.state || '未承認' // Set to pending if not already set
-    };
-    
-    // Update local state with the holiday entry
-    setAttendanceData(prevData => 
-      prevData.map(entry => 
-        entry.date === date 
-          ? updatedEntry
-          : entry
-      )
-    );
-  } catch (error) {
-    console.error('Error registering holiday:', error);
-  }
-};
-
-const handleInputChange = async (date, field, value) => {
-  // Check if entry is approved
-  const entry = attendanceData.find(e => e.date === date);
-  if (entry?.state === '承認済') {
-    alert('Cannot modify after approval');
-    return;
-  }
-    
     try {
-      // Update local state immediately to prevent focus loss and flickering
-      setAttendanceData(prevData => 
-        prevData.map(item => 
-          item.date === date 
+      const response = await fetch(`${API_URL}/attendance/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date_day: entry.date_day,
+          date_month: entry.date_month,
+          date_year: entry.date_year
+        })
+      });
+      const result = await response.json();
+
+      const updatedEntry = {
+        ...result.entry,
+        date: `${result.entry.date_year}-${String(result.entry.date_month).padStart(2, '0')}-${String(result.entry.date_day).padStart(2, '0')}`,
+        start_time: result.entry.start_hour !== null && result.entry.start_minute !== null
+          ? `${String(result.entry.start_hour).padStart(2, '0')}${String(result.entry.start_minute).padStart(2, '0')}`
+          : '',
+        end_time: result.entry.end_hour !== null && result.entry.end_minute !== null
+          ? `${String(result.entry.end_hour).padStart(2, '0')}${String(result.entry.end_minute).padStart(2, '0')}`
+          : '',
+        state: result.entry.state || '未承認'
+      };
+
+      setAttendanceData(prevData =>
+        prevData.map(e =>
+          e.date_day === entry.date_day && e.date_month === entry.date_month && e.date_year === entry.date_year
+            ? updatedEntry
+            : e
+        )
+      );
+    } catch (error) {
+      console.error('Error registering:', error);
+    }
+  };
+
+  const handleHoliday = async (entry) => {
+    const today = new Date();
+    const entryDate = new Date(entry.date_year, entry.date_month - 1, entry.date_day);
+
+    if (entryDate > today) {
+      alert('Cannot apply for future dates');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/attendance/holiday`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date_day: entry.date_day,
+          date_month: entry.date_month,
+          date_year: entry.date_year
+        })
+      });
+      const result = await response.json();
+
+      const updatedEntry = {
+        ...result.entry,
+        date: `${result.entry.date_year}-${String(result.entry.date_month).padStart(2, '0')}-${String(result.entry.date_day).padStart(2, '0')}`,
+        start_time: result.entry.start_hour !== null && result.entry.start_minute !== null
+          ? `${String(result.entry.start_hour).padStart(2, '0')}${String(result.entry.start_minute).padStart(2, '0')}`
+          : '',
+        end_time: result.entry.end_hour !== null && result.entry.end_minute !== null
+          ? `${String(result.entry.end_hour).padStart(2, '0')}${String(result.entry.end_minute).padStart(2, '0')}`
+          : '',
+        state: result.entry.state || '未承認'
+      };
+
+      setAttendanceData(prevData =>
+        prevData.map(e =>
+          e.date_day === entry.date_day && e.date_month === entry.date_month && e.date_year === entry.date_year
+            ? updatedEntry
+            : e
+        )
+      );
+    } catch (error) {
+      console.error('Error registering holiday:', error);
+    }
+  };
+
+  const handleInputChange = async (entry, field, value) => {
+    if (entry?.state === '承認済') {
+      alert('Cannot modify after approval');
+      return;
+    }
+
+    try {
+      // Update local state immediately
+      setAttendanceData(prevData =>
+        prevData.map(item =>
+          item.date_day === entry.date_day && item.date_month === entry.date_month && item.date_year === entry.date_year
             ? { ...item, [field]: value }
             : item
         )
       );
-      
-      // Send update to server
-      const response = await fetch(`${API_URL}/attendance/${date}`, {
+
+      // Build update payload with int fields
+      const updatePayload = {
+        date_day: entry.date_day,
+        date_month: entry.date_month,
+        date_year: entry.date_year
+      };
+
+      // Convert time fields to int format
+      if (field === 'start_time' && value.length === 4) {
+        updatePayload.start_hour = parseInt(value.slice(0, 2), 10);
+        updatePayload.start_minute = parseInt(value.slice(2, 4), 10);
+      } else if (field === 'end_time' && value.length === 4) {
+        updatePayload.end_hour = parseInt(value.slice(0, 2), 10);
+        updatePayload.end_minute = parseInt(value.slice(2, 4), 10);
+      } else if (field === 'start_time' || field === 'end_time') {
+        // Partial input - don't send to server yet
+        return;
+      } else {
+        updatePayload[field] = value;
+      }
+
+      const response = await fetch(`${API_URL}/attendance/update`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date, [field]: value })
+        body: JSON.stringify(updatePayload)
       });
-      
-      // Get the updated entry with calculated fields
+
       const updatedEntry = await response.json();
-      
-      // Update local state with calculated fields (without reloading everything)
-      setAttendanceData(prevData => 
-        prevData.map(item => 
-          item.date === date 
-            ? updatedEntry
+
+      // Transform response back to display format
+      const transformedEntry = {
+        ...updatedEntry,
+        date: `${updatedEntry.date_year}-${String(updatedEntry.date_month).padStart(2, '0')}-${String(updatedEntry.date_day).padStart(2, '0')}`,
+        start_time: updatedEntry.start_hour !== null && updatedEntry.start_minute !== null
+          ? `${String(updatedEntry.start_hour).padStart(2, '0')}${String(updatedEntry.start_minute).padStart(2, '0')}`
+          : '',
+        end_time: updatedEntry.end_hour !== null && updatedEntry.end_minute !== null
+          ? `${String(updatedEntry.end_hour).padStart(2, '0')}${String(updatedEntry.end_minute).padStart(2, '0')}`
+          : ''
+      };
+
+      setAttendanceData(prevData =>
+        prevData.map(item =>
+          item.date_day === entry.date_day && item.date_month === entry.date_month && item.date_year === entry.date_year
+            ? transformedEntry
             : item
         )
       );
     } catch (error) {
       console.error('Error updating:', error);
-      // Reload data on error
       loadData();
     }
   };
@@ -432,10 +500,12 @@ const handleInputChange = async (date, field, value) => {
                 </thead>
                 <tbody className="bg-white">
                   {attendanceData.map((entry, idx) => {
-                    const isApplied = !!entry.category; // Entry is applied if category exists
+                    const isApplied = !!entry.category;
                     const isApproved = entry.state === '承認済';
-                    const today = new Date().toISOString().split('T')[0];
-                    const isTodayOrPast = new Date(entry.date) <= new Date(today);
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    const entryDate = new Date(entry.date_year, entry.date_month - 1, entry.date_day);
+                    const isTodayOrPast = entryDate <= today;
 
                     return (
                       <tr
@@ -447,13 +517,13 @@ const handleInputChange = async (date, field, value) => {
                           {isTodayOrPast && !isApproved ? (
                             <div className="flex gap-1.5">
                               <button
-                                onClick={() => handleRegister(entry.date)}
+                                onClick={() => handleRegister(entry)}
                                 className="px-4 py-2 bg-primary text-black rounded-md text-xs font-medium hover:bg-primary-dark transition-all duration-300 shadow-sm hover:-translate-y-0.5 hover:shadow-md"
                               >
                                 {t.register}
                               </button>
                               <button
-                                onClick={() => handleHoliday(entry.date)}
+                                onClick={() => handleHoliday(entry)}
                                 className="px-4 py-2 bg-accent text-black rounded-md text-xs font-medium hover:bg-accent-light transition-all duration-300 shadow-sm hover:-translate-y-0.5 hover:shadow-md"
                               >
                                 {t.holiday}
@@ -479,8 +549,8 @@ const handleInputChange = async (date, field, value) => {
                         <td className="px-3 py-3.5 border-r border-gray-200">
                           {entry.state ? (
                             <span className={`px-2.5 py-1 rounded text-xs font-medium ${
-                              entry.state === '承認済' 
-                                ? 'bg-green-100 text-green-800' 
+                              entry.state === '承認済'
+                                ? 'bg-green-100 text-green-800'
                                 : 'bg-yellow-100 text-yellow-800'
                             }`}>
                               {translateState(entry.state)}
@@ -509,7 +579,7 @@ const handleInputChange = async (date, field, value) => {
                             value={entry.start_time}
                             onChange={(e) => {
                               const value = e.target.value.replace(/\D/g, '').slice(0, 4);
-                              handleInputChange(entry.date, 'start_time', value);
+                              handleInputChange(entry, 'start_time', value);
                             }}
                             placeholder={
                               entry.working_system === 'A' ? '0845' :
@@ -517,7 +587,7 @@ const handleInputChange = async (date, field, value) => {
                               entry.working_system === 'C' ? '0700' : '0845'
                             }
                             maxLength="4"
-                            disabled={isApproved} // Disabled only when approved
+                            disabled={isApproved}
                             className={`w-[70px] px-2 py-1.5 border border-gray-300 rounded text-center font-mono text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all ${
                               isApproved ? 'bg-gray-100 cursor-not-allowed' : ''
                             }`}
@@ -531,7 +601,7 @@ const handleInputChange = async (date, field, value) => {
                             value={entry.end_time}
                             onChange={(e) => {
                               const value = e.target.value.replace(/\D/g, '').slice(0, 4);
-                              handleInputChange(entry.date, 'end_time', value);
+                              handleInputChange(entry, 'end_time', value);
                             }}
                             placeholder={
                               entry.working_system === 'A' ? '1715' :
@@ -539,7 +609,7 @@ const handleInputChange = async (date, field, value) => {
                               entry.working_system === 'C' ? '1600' : '1715'
                             }
                             maxLength="4"
-                            disabled={isApproved} // Disabled only when approved
+                            disabled={isApproved}
                             className={`w-[70px] px-2 py-1.5 border border-gray-300 rounded text-center font-mono text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all ${
                               isApproved ? 'bg-gray-100 cursor-not-allowed' : ''
                             }`}
@@ -555,8 +625,8 @@ const handleInputChange = async (date, field, value) => {
                         <td className="px-3 py-3.5 border-r border-gray-200">
                           <select
                             value={entry.working_system}
-                            onChange={(e) => handleInputChange(entry.date, 'working_system', e.target.value)}
-                            disabled={isApproved} // Disabled only when approved
+                            onChange={(e) => handleInputChange(entry, 'working_system', e.target.value)}
+                            disabled={isApproved}
                             className={`w-full px-2 py-1.5 border border-gray-300 rounded text-center font-mono text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all cursor-pointer ${
                               isApproved ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'
                             }`}
@@ -597,8 +667,8 @@ const handleInputChange = async (date, field, value) => {
                           <input
                             type="text"
                             value={entry.work_contents}
-                            onChange={(e) => handleInputChange(entry.date, 'work_contents', e.target.value)}
-                            disabled={isApproved} // Disabled only when approved
+                            onChange={(e) => handleInputChange(entry, 'work_contents', e.target.value)}
+                            disabled={isApproved}
                             className={`w-full min-w-[150px] px-2 py-1.5 border border-gray-300 rounded text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all ${
                               isApproved ? 'bg-gray-100 cursor-not-allowed' : ''
                             }`}

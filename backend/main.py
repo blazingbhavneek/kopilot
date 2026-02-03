@@ -35,12 +35,16 @@ WORKING_SYSTEMS = {
 # Models
 class AttendanceEntry(BaseModel):
     id: int
-    date: str
+    date_day: int
+    date_month: int
+    date_year: int
     day: str
     category: Literal["通常", "休暇", ""] = ""
     state: Literal["", "未承認", "承認済"] = ""
-    start_time: str = ""
-    end_time: str = ""
+    start_hour: Optional[int] = None
+    start_minute: Optional[int] = None
+    end_hour: Optional[int] = None
+    end_minute: Optional[int] = None
     time_range: str = "8:45-17:15"
     working_system: Literal["A", "B", "C"] = "A"
     rest_minutes: int = 0
@@ -51,14 +55,16 @@ class AttendanceEntry(BaseModel):
     work_contents: str = ""
     remarks: str = ""
 
-class AttendanceUpdate(BaseModel):
-    date: str
-    category: Optional[str] = None
-    state: Optional[str] = None
-    start_time: Optional[str] = None
-    end_time: Optional[str] = None
-    work_contents: Optional[str] = None
-    working_system: Optional[str] = None
+class AttendancePeriodRequest(BaseModel):
+    year: int
+    month: int
+    half: Literal["first", "second"]
+
+class AttendanceDateRequest(BaseModel):
+    date_day: int
+    date_month: int
+    date_year: int
+
 
 class EmployeeInfo(BaseModel):
     name: str
@@ -71,7 +77,6 @@ async def startup_db_client():
     try:
         client = AsyncIOMotorClient(MONGODB_URL)
         db = client[DB_NAME]
-        # Test connection
         await db.command('ping')
         print(f"✅ Connected to MongoDB at {MONGODB_URL}")
     except Exception as e:
@@ -84,207 +89,72 @@ async def shutdown_db_client():
     if client:
         client.close()
 
-# AFTER CHANGES
-def generate_realistic_times_with_variations(working_system: str) -> tuple[str, str]:
+# Helper Functions
+def generate_realistic_times_with_variations(working_system: str) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
     """Generate realistic start and end times with specific variations for human entry"""
-    # Get base times for the system
     time_range = get_time_range_for_system(working_system)
     expected_start, expected_end = time_range.split('-')
     exp_start_hour, exp_start_min = int(expected_start.split(':')[0]), int(expected_start.split(':')[1])
     exp_end_hour, exp_end_min = int(expected_end.split(':')[0]), int(expected_end.split(':')[1])
-    
-    # Generate start time with specific variation for human entry 
-    # More probability of coming early (-30min to +5min)
-    early_options = list(range(-30, 6))  # -30 to -1 has higher chance
-    late_options = list(range(-5, 1))   # -5 to 0 has normal chance
-    # Combine options to give more weight to early arrivals
+
+    early_options = list(range(-30, 6))
+    late_options = list(range(-5, 1))
     start_variation = choice(early_options + late_options)
     start_total_min = exp_start_hour * 60 + exp_start_min + start_variation
     start_hour = start_total_min // 60
-    start_min = start_total_min % 60
-    start_time = f"{start_hour:02d}{start_min:02d}"
-    
-    # Generate end time with variation for overtime possibilities
-    # More probability of overtime (-5min to +2 hours)
+    start_minute = start_total_min % 60
+
     end_variation_options = [-5, -3, -1, 0, 0, 0, 5, 10, 15, 30, 45, 60, 90, 120]
     end_variation = choice(end_variation_options)
     end_total_min = exp_end_hour * 60 + exp_end_min + end_variation
     end_hour = end_total_min // 60
-    end_min = end_total_min % 60
-    end_time = f"{end_hour:02d}{end_min:02d}"
-    
-    return start_time, end_time
+    end_minute = end_total_min % 60
+
+    return start_hour, start_minute, end_hour, end_minute
 
 def get_time_period_status(date_obj: datetime) -> str:
     """Determine which time period the date falls into relative to today"""
     today = datetime.now().date()
     entry_date = date_obj.date()
-    
-    # Calculate days difference
     days_diff = (today - entry_date).days
-    
-    if days_diff >= 90:  # -3 months or older
+
+    if days_diff >= 90:
         return "old"
-    elif days_diff >= 10:  # -3 months to -10 days
+    elif days_diff >= 10:
         return "approved"
-    elif days_diff >= 3:  # -10 days to -3 days
+    elif days_diff >= 3:
         return "pending"
-    elif days_diff >= 1:  # -3 days to yesterday
+    elif days_diff >= 1:
         return "system_only"
-    else:  # Today
+    else:
         return "empty"
 
-
-# AFTER CHANGES
-def generate_random_attendance_entry(date_obj: datetime, entry_id: int) -> AttendanceEntry:
-    """Generate random attendance data for a date with different rules based on time period"""
-    date_str = date_obj.strftime("%Y-%m-%d")
-    day_name = get_day_name(date_str, "ja")
-    
-    # Determine if weekend
-    is_weekend = day_name in ['土', '日']
-    
-    # Get time period status
-    period_status = get_time_period_status(date_obj)
-    
-    # Set defaults
-    category = ""
-    state = ""
-    start_time = ""
-    end_time = ""
-    working_system = "A"  # Default to System A as requested
-    
-    if is_weekend:
-        # For all weekends regardless of time period, mark as holiday but not approved by admin
-        category = "休暇"
-        # Weekends remain unapproved as they require admin approval
-        # For old/pending periods, we might want them unapproved; for others leave blank
-        if period_status in ["old", "approved"]:
-            state = "承認済"  # approved by admin
-        else:
-            state = ""  # For recent periods, no approval needed yet
-    else:
-        # It's a weekday, apply period-specific rules
-        if period_status == "old":
-            # -3 months to -10 days: System timing A with human input time matching system time (approved and non-editable)
-            category = choice(['通常'])  # Work or work from home
-            start_time, end_time = generate_realistic_times_with_variations(working_system)
-            state = "承認済"  # Approved and non-editable
-        
-        elif period_status == "approved":
-            # -3 months to -10 days: Same as old period
-            category = choice(['通常'])  # Work or work from home
-            start_time, end_time = generate_realistic_times_with_variations(working_system)
-            state = "承認済"  # Approved and non-editable
-        
-        elif period_status == "pending":
-            # -10 days to -3 days: Realistic human entry times, editable since not approved
-            category = choice(['通常'])  # Work or work from home
-            start_time, end_time = generate_realistic_times_with_variations(working_system)
-            state = "未承認"  # Not approved, editable
-        
-        elif period_status == "system_only":
-            # -3 days to yesterday: Only system-generated times, non-editable
-            category = choice(['通常'])  # Work or work from home
-            start_time, end_time = generate_realistic_times_with_variations(working_system)
-            state = ""  # No approval status
-        
-        elif period_status == "empty":
-            # Today: Fully empty since PC hasn't shut down yet
-            pass  # Leave everything as default empty values
-    
-    # Random work contents (for applicable periods)
-    work_contents_options = [
-        '',
-        'プロジェクトA作業',
-        '会議対応',
-        '資料作成',
-        '顧客対応',
-        'システム開発',
-    ]
-    work_contents = choice(work_contents_options) if start_time or end_time else ""
-    
-    entry = AttendanceEntry(
-        id=entry_id,
-        date=date_str,
-        day=day_name,
-        category=category,
-        state=state,
-        start_time=start_time,
-        end_time=end_time,
-        time_range=get_time_range_for_system(working_system),
-        working_system=working_system,
-        work_contents=work_contents,
-    )
-    
-    # Calculate times if start and end are present
-    if start_time and end_time:
-        entry = calculate_times(entry)
-    
-    return entry
-
-# AUTO DATA MAKER FLOW SECTION (Can be removed later)
-# This section generates false data only when there is no data in MongoDB to pull from
-async def check_and_generate_auto_data(year: int, month: int, half: str) -> bool:
-    """Check if data exists in MongoDB and generate auto data if none exists"""
-    existing_data = await get_attendance_from_db(year, month, half)
-    
-    if existing_data is None:
-        # Generate auto data since no data exists in MongoDB
-        entries = generate_attendance_data(year, month, half)
-        await save_attendance_to_db(year, month, half, entries)
-        return True  # Data was generated
-    
-    return False  # Data already existed, no need to generate
-
-def get_day_name(date_str: str, lang: str = "ja") -> str:
-    """Get day of week name"""
-    date = datetime.strptime(date_str, "%Y-%m-%d")
-    if lang == "ja":
-        days = ["月", "火", "水", "木", "金", "土", "日"]
-    else:
-        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    return days[date.weekday()]
-
-def get_time_range_for_system(system: str) -> str:
-    """Get time range based on working system"""
-    return WORKING_SYSTEMS.get(system, "8:45-17:15")
-
-
-def calculate_rest_time(start: str, end: str, working_system: str = "A") -> int:
+def calculate_rest_time(start_hour: Optional[int], start_minute: Optional[int],
+                        end_hour: Optional[int], end_minute: Optional[int],
+                        working_system: str = "A") -> int:
     """Calculate rest time in minutes based on working hours and system"""
-    if not start or not end:
+    if start_hour is None or start_minute is None or end_hour is None or end_minute is None:
         return 0
-    
+
     try:
-        start_hour = int(start[:2])
-        start_min = int(start[2:])
-        end_hour = int(end[:2])
-        end_min = int(end[2:])
-        
         rest = 0
-        
-        # Lunch break: 12:30-13:15 (45 min) - applies to all systems
-        if start_hour < 13 or (start_hour == 13 and start_min < 15):
-            if end_hour > 12 or (end_hour == 12 and end_min > 30):
+        if start_hour < 13 or (start_hour == 13 and start_minute < 15):
+            if end_hour > 12 or (end_hour == 12 and end_minute > 30):
                 rest += 45
-        
-        # Get expected start and end times based on working system
+
         time_range = get_time_range_for_system(working_system)
         expected_start, expected_end = time_range.split('-')
         exp_start_hour, exp_start_min = int(expected_start.split(':')[0]), int(expected_start.split(':')[1])
         exp_end_hour, exp_end_min = int(expected_end.split(':')[0]), int(expected_end.split(':')[1])
-        
-        # Morning break before expected start time (up to 10 min)
-        if start_hour < exp_start_hour or (start_hour == exp_start_hour and start_min < exp_start_min):
-            morning_break = min(10, (exp_start_hour * 60 + exp_start_min) - (start_hour * 60 + start_min))
+
+        if start_hour < exp_start_hour or (start_hour == exp_start_hour and start_minute < exp_start_min):
+            morning_break = min(10, (exp_start_hour * 60 + exp_start_min) - (start_hour * 60 + start_minute))
             rest += max(0, morning_break)
-        
-        # Evening break after expected end time (up to 15 min)
-        if end_hour > exp_end_hour or (end_hour == exp_end_hour and end_min > exp_end_min):
-            evening_break = min(15, (end_hour * 60 + end_min) - (exp_end_hour * 60 + exp_end_min))
+
+        if end_hour > exp_end_hour or (end_hour == exp_end_hour and end_minute > exp_end_min):
+            evening_break = min(15, (end_hour * 60 + end_minute) - (exp_end_hour * 60 + exp_end_min))
             rest += max(0, evening_break)
-        
+
         return rest
     except:
         return 0
@@ -295,117 +165,198 @@ def calculate_standard_hours(working_system: str) -> float:
     start, end = time_range.split('-')
     start_hour, start_min = map(int, start.split(':'))
     end_hour, end_min = map(int, end.split(':'))
-    
+
     total_min = (end_hour * 60 + end_min) - (start_hour * 60 + start_min)
-    # Subtract standard lunch break (45 min)
     return (total_min - 45) / 60
 
 def calculate_times(entry: AttendanceEntry) -> AttendanceEntry:
     """Calculate working time, overtime, deductions, etc."""
-    if not entry.start_time or not entry.end_time:
+    if entry.start_hour is None or entry.start_minute is None or entry.end_hour is None or entry.end_minute is None:
         return entry
-    
+
     try:
-        # Parse times
-        start_hour = int(entry.start_time[:2])
-        start_min = int(entry.start_time[2:])
-        end_hour = int(entry.end_time[:2])
-        end_min = int(entry.end_time[2:])
-        
-        # Total time in minutes
-        total_min = (end_hour * 60 + end_min) - (start_hour * 60 + start_min)
-        
-        # Rest time based on working system
-        entry.rest_minutes = calculate_rest_time(entry.start_time, entry.end_time, entry.working_system)
-        
-        # Working time (hours)
+        total_min = (entry.end_hour * 60 + entry.end_minute) - (entry.start_hour * 60 + entry.start_minute)
+
+        entry.rest_minutes = calculate_rest_time(
+            entry.start_hour, entry.start_minute,
+            entry.end_hour, entry.end_minute,
+            entry.working_system
+        )
+
         entry.working_time = round((total_min - entry.rest_minutes) / 60, 2)
-        
-        # Standard work time based on working system
+
         standard_hours = calculate_standard_hours(entry.working_system)
-        
-        # Deductions (negative if less than standard)
+
         if entry.working_time < standard_hours:
             entry.deductions = round(standard_hours - entry.working_time, 2)
         else:
             entry.deductions = 0.0
-        
-        # Overtime (only positive overtime counts)
+
         entry.overtime = round(max(0, entry.working_time - standard_hours), 2)
-        
-        # Late night work (after 20:00 / 8pm)
-        if end_hour >= 20:
-            late_night_start = max(20 * 60, start_hour * 60 + start_min)
-            late_night_min = (end_hour * 60 + end_min) - late_night_start
-            # Subtract any rest during late night period
+
+        if entry.end_hour >= 20:
+            late_night_start = max(20 * 60, entry.start_hour * 60 + entry.start_minute)
+            late_night_min = (entry.end_hour * 60 + entry.end_minute) - late_night_start
             if late_night_min > 0:
                 entry.late_night = round(late_night_min / 60, 2)
             else:
                 entry.late_night = 0.0
         else:
             entry.late_night = 0.0
-        
+
     except Exception as e:
         print(f"Calculation error: {e}")
-    
+
     return entry
 
+def get_day_name_from_date(date_obj: datetime, lang: str = "ja") -> str:
+    """Get day of week name from datetime object"""
+    if lang == "ja":
+        days = ["月", "火", "水", "木", "金", "土", "日"]
+    else:
+        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    return days[date_obj.weekday()]
+
+def get_day_name(day: int, month: int, year: int, lang: str = "ja") -> str:
+    """Get day of week name from int components"""
+    date_obj = datetime(year, month, day)
+    return get_day_name_from_date(date_obj, lang)
+
+def get_time_range_for_system(system: str) -> str:
+    """Get time range based on working system"""
+    return WORKING_SYSTEMS.get(system, "8:45-17:15")
+
+def generate_random_attendance_entry(date_obj: datetime, entry_id: int) -> AttendanceEntry:
+    """Generate random attendance data for a date with different rules based on time period"""
+    day_name = get_day_name_from_date(date_obj, "ja")
+    is_weekend = day_name in ['土', '日']
+    period_status = get_time_period_status(date_obj)
+
+    category = ""
+    state = ""
+    start_hour = None
+    start_minute = None
+    end_hour = None
+    end_minute = None
+    working_system = "A"
+
+    if is_weekend:
+        category = "休暇"
+        if period_status in ["old", "approved"]:
+            state = "承認済"
+        else:
+            state = ""
+    else:
+        if period_status == "old":
+            category = choice(['通常'])
+            start_hour, start_minute, end_hour, end_minute = generate_realistic_times_with_variations(working_system)
+            state = "承認済"
+
+        elif period_status == "approved":
+            category = choice(['通常'])
+            start_hour, start_minute, end_hour, end_minute = generate_realistic_times_with_variations(working_system)
+            state = "承認済"
+
+        elif period_status == "pending":
+            category = choice(['通常'])
+            start_hour, start_minute, end_hour, end_minute = generate_realistic_times_with_variations(working_system)
+            state = "未承認"
+
+        elif period_status == "system_only":
+            category = choice(['通常'])
+            start_hour, start_minute, end_hour, end_minute = generate_realistic_times_with_variations(working_system)
+            state = ""
+
+        elif period_status == "empty":
+            pass
+
+    work_contents_options = [
+        '',
+        'プロジェクトA作業',
+        '会議対応',
+        '資料作成',
+        '顧客対応',
+        'システム開発',
+    ]
+    work_contents = choice(work_contents_options) if start_hour is not None else ""
+
+    entry = AttendanceEntry(
+        id=entry_id,
+        date_day=date_obj.day,
+        date_month=date_obj.month,
+        date_year=date_obj.year,
+        day=day_name,
+        category=category,
+        state=state,
+        start_hour=start_hour,
+        start_minute=start_minute,
+        end_hour=end_hour,
+        end_minute=end_minute,
+        time_range=get_time_range_for_system(working_system),
+        working_system=working_system,
+        work_contents=work_contents,
+    )
+
+    if start_hour is not None and end_hour is not None:
+        entry = calculate_times(entry)
+
+    return entry
 
 def generate_attendance_data(year: int, month: int, half: Literal["first", "second"]) -> List[AttendanceEntry]:
     """Generate attendance data for a half month period"""
     from calendar import monthrange
-    
     _, days_in_month = monthrange(year, month)
-    
+
     if half == "first":
         start_day = 1
         end_day = 15
     else:
         start_day = 16
         end_day = days_in_month
-    
+
     entries = []
     entry_id = 1
-    
+
     for day in range(start_day, end_day + 1):
         date_obj = datetime(year, month, day)
         today = datetime.now().date()
         entry_date = date_obj.date()
-        
-        # If it's today, keep it empty
-        # If it's in the past, generate random data
+
         if entry_date < today:
             entry = generate_random_attendance_entry(date_obj, entry_id)
         else:
-            # Future dates or today - keep empty
-            date_str = date_obj.strftime("%Y-%m-%d")
-            day_name = get_day_name(date_str, "ja")
+            day_name = get_day_name(day, month, year, "ja")
             entry = AttendanceEntry(
                 id=entry_id,
-                date=date_str,
+                date_day=day,
+                date_month=month,
+                date_year=year,
                 day=day_name,
                 category="",
                 state="",
-                start_time="",
-                end_time="",
+                start_hour=None,
+                start_minute=None,
+                end_hour=None,
+                end_minute=None,
                 time_range=get_time_range_for_system("A"),
                 working_system="A",
             )
-        
+
         entries.append(entry)
         entry_id += 1
-    
+
     return entries
 
+# Database Functions
 async def get_attendance_from_db(year: int, month: int, half: str) -> List[AttendanceEntry]:
     """Get attendance data from MongoDB"""
     if db is None:
         return None
-    
+
     try:
         key = f"{year}-{month:02d}-{half}"
         result = await db.attendance.find_one({"_id": key})
-        
+
         if result and "entries" in result:
             return [AttendanceEntry(**entry) for entry in result["entries"]]
         return None
@@ -417,7 +368,7 @@ async def save_attendance_to_db(year: int, month: int, half: str, entries: List[
     """Save attendance data to MongoDB"""
     if db is None:
         return
-    
+
     try:
         key = f"{year}-{month:02d}-{half}"
         await db.attendance.update_one(
@@ -427,33 +378,6 @@ async def save_attendance_to_db(year: int, month: int, half: str, entries: List[
         )
     except Exception as e:
         print(f"Error saving to DB: {e}")
-
-async def update_attendance_entry_in_db(date: str, updates: dict):
-    """Update a specific attendance entry in MongoDB"""
-    if db is None:
-        return
-    
-    try:
-        # Find which period this date belongs to
-        date_obj = datetime.strptime(date, "%Y-%m-%d")
-        year = date_obj.year
-        month = date_obj.month
-        day = date_obj.day
-        half = "first" if day <= 15 else "second"
-        key = f"{year}-{month:02d}-{half}"
-        
-        # Build update query for the specific entry
-        update_fields = {}
-        for field, value in updates.items():
-            update_fields[f"entries.$[elem].{field}"] = value
-        
-        await db.attendance.update_one(
-            {"_id": key},
-            {"$set": update_fields},
-            array_filters=[{"elem.date": date}]
-        )
-    except Exception as e:
-        print(f"Error updating entry in DB: {e}")
 
 # In-memory fallback storage
 memory_storage = {}
@@ -486,7 +410,7 @@ async def update_employee(info: EmployeeInfo) -> EmployeeInfo:
     """Update employee information"""
     global employee_info
     employee_info = info
-    
+
     if db is not None:
         try:
             await db.employee.update_one(
@@ -496,161 +420,344 @@ async def update_employee(info: EmployeeInfo) -> EmployeeInfo:
             )
         except:
             pass
-    
+
     return employee_info
 
-@app.get("/api/attendance/{year}/{month}/{half}")
-async def get_attendance(year: int, month: int, half: str) -> List[AttendanceEntry]:
+@app.post("/api/attendance/period")
+async def get_attendance(request: AttendancePeriodRequest) -> List[AttendanceEntry]:
     """Get attendance data for a specific period"""
-    if half not in ["first", "second"]:
+    if request.half not in ["first", "second"]:
         raise HTTPException(status_code=400, detail="Half must be 'first' or 'second'")
-    
-    # Try to get from MongoDB first
-    entries = await get_attendance_from_db(year, month, half)
-    
+
+    entries = await get_attendance_from_db(request.year, request.month, request.half)
+
     if entries is not None:
         return entries
-    
-    # Generate historical data from last year to yesterday
-    # Or use in-memory storage
-    key = f"{year}-{month:02d}-{half}"
-    
+
+    key = f"{request.year}-{request.month:02d}-{request.half}"
+
     if key not in memory_storage:
-        entries = generate_attendance_data(year, month, half)
+        entries = generate_attendance_data(request.year, request.month, request.half)
         memory_storage[key] = entries
-        
-        # Save to MongoDB if available
-        await save_attendance_to_db(year, month, half, entries)
-    
+        await save_attendance_to_db(request.year, request.month, request.half, entries)
+
     return memory_storage[key]
 
-@app.put("/api/attendance/{date}")
-async def update_attendance(date: str, update: AttendanceUpdate) -> AttendanceEntry:
+
+
+
+
+
+
+
+def generate_attendance_data_by_date_range(start_date_str: str, end_date_str: str) -> List[AttendanceEntry]:
+    """Generate attendance data for a specific date range"""
+    start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+    end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
+
+    entries = []
+    entry_id = 1
+
+    current_date = start_date
+    while current_date <= end_date:
+        date_obj = current_date
+        today = datetime.now().date()
+        entry_date = date_obj.date()
+
+        if entry_date < today:
+            entry = generate_random_attendance_entry(date_obj, entry_id)
+        else:
+            day_name = get_day_name_from_date(date_obj, "ja")
+            entry = AttendanceEntry(
+                id=entry_id,
+                date_day=date_obj.day,
+                date_month=date_obj.month,
+                date_year=date_obj.year,
+                day=day_name,
+                category="",
+                state="",
+                start_hour=None,
+                start_minute=None,
+                end_hour=None,
+                end_minute=None,
+                time_range=get_time_range_for_system("A"),
+                working_system="A",
+            )
+
+        entries.append(entry)
+        entry_id += 1
+        current_date += timedelta(days=1)
+
+    return entries
+
+
+async def save_attendance_to_db_by_date_range(start_date_str: str, end_date_str: str, entries: List[AttendanceEntry]):
+    """Save attendance data to MongoDB for a specific date range"""
+    if db is None:
+        return
+
+    try:
+        key = f"{start_date_str}-{end_date_str}"
+        await db.attendance.update_one(
+            {"_id": key},
+            {"$set": {"entries": [entry.dict() for entry in entries]}},
+            upsert=True
+        )
+    except Exception as e:
+        print(f"Error saving to DB: {e}")
+
+async def get_attendance_from_db_by_date_range(start_date_str: str, end_date_str: str) -> List[AttendanceEntry]:
+    """Get attendance data from MongoDB for a specific date range"""
+    if db is None:
+        return None
+
+    try:
+        key = f"{start_date_str}-{end_date_str}"
+        result = await db.attendance.find_one({"_id": key})
+
+        if result and "entries" in result:
+            return [AttendanceEntry(**entry) for entry in result["entries"]]
+        return None
+    except Exception as e:
+        print(f"Error fetching from DB: {e}")
+        return None
+
+async def get_attendance(period_request: AttendancePeriodRequest) -> List[AttendanceEntry]:
+    """Get attendance data for a specific period"""
+    entries = await get_attendance_from_db(period_request.year, period_request.month, period_request.half)
+
+    if entries is not None:
+        return entries
+
+    key = f"{period_request.year}-{period_request.month:02d}-{period_request.half}"
+
+    if key not in memory_storage:
+        entries = generate_attendance_data(period_request.year, period_request.month, period_request.half)
+        memory_storage[key] = entries
+        await save_attendance_to_db(period_request.year, period_request.month, period_request.half, entries)
+
+    return memory_storage[key]
+
+
+class AttendanceDateRangeRequest(BaseModel):
+    start_date: str
+    end_date: str
+
+
+@app.post("/api/attendance/date-range")
+async def get_attendance_by_date_range(request: AttendanceDateRangeRequest) -> List[AttendanceEntry]:
+    """Get attendance data for a specific date range"""
+    try:
+        start_date = datetime.strptime(request.start_date, "%Y-%m-%d")
+        end_date = datetime.strptime(request.end_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    if start_date > end_date:
+        raise HTTPException(status_code=400, detail="Start date must be before end date.")
+
+    key = f"{request.start_date}-{request.end_date}"
+
+    if key not in memory_storage:
+        entries = generate_attendance_data_by_date_range(request.start_date, request.end_date)
+        memory_storage[key] = entries
+        await save_attendance_to_db_by_date_range(request.start_date, request.end_date, entries)
+
+    return memory_storage[key]
+
+
+@app.post("/api/attendance/date-range")
+async def get_attendance_by_date_range(request: AttendanceDateRangeRequest) -> List[AttendanceEntry]:
+    """Get attendance data for a specific date range"""
+    try:
+        start_date = datetime.strptime(request.start_date, "%Y-%m-%d")
+        end_date = datetime.strptime(request.end_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    if start_date > end_date:
+        raise HTTPException(status_code=400, detail="Start date must be before end date.")
+
+    key = f"{request.start_date}-{request.end_date}"
+
+    if key not in memory_storage:
+        entries = generate_attendance_data_by_date_range(request.start_date, request.end_date)
+        memory_storage[key] = entries
+        await save_attendance_to_db_by_date_range(request.start_date, request.end_date, entries)
+
+    return memory_storage[key]
+
+class AttendanceLastNDaysRequest(BaseModel):
+    end_date: str
+    days: int
+
+@app.post("/api/attendance/last-n-days")
+async def get_attendance_by_last_n_days(request: AttendanceLastNDaysRequest) -> List[AttendanceEntry]:
+    """Get attendance data for the last N days from a given end date"""
+    try:
+        end_date = datetime.strptime(request.end_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    if request.days <= 0:
+        raise HTTPException(status_code=400, detail="Number of days must be positive.")
+
+    start_date = end_date - timedelta(days=request.days - 1)
+
+    key = f"{start_date.date()}-{end_date.date()}"
+
+    if key not in memory_storage:
+        entries = generate_attendance_data_by_date_range(str(start_date.date()), str(end_date.date()))
+        memory_storage[key] = entries
+        await save_attendance_to_db_by_date_range(str(start_date.date()), str(end_date.date()), entries)
+
+    return memory_storage[key]
+
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional
+
+class AttendanceUpdate(BaseModel):
+    date_day: int
+    date_month: int
+    date_year: int
+    category: Optional[str] = None
+    state: Optional[str] = None
+    start_hour: Optional[int] = None
+    start_minute: Optional[int] = None
+    end_hour: Optional[int] = None
+    end_minute: Optional[int] = None
+    work_contents: Optional[str] = None
+    working_system: Optional[str] = None
+
+@app.put("/api/attendance/update")
+async def update_attendance(update: AttendanceUpdate) -> AttendanceEntry:
     """Update attendance entry for a specific date"""
-    # Parse date to find the correct period
-    date_obj = datetime.strptime(date, "%Y-%m-%d")
-    year = date_obj.year
-    month = date_obj.month
-    day = date_obj.day
+    year = update.date_year
+    month = update.date_month
+    day = update.date_day
     half = "first" if day <= 15 else "second"
-    
-    # Get current entries
-    entries = await get_attendance(year, month, half)
-    
-    # Find and update the entry
+
+    period_request = AttendancePeriodRequest(year=year, month=month, half=half)
+    entries = await get_attendance(period_request)
+
     updated_entry = None
     for entry in entries:
-        if entry.date == date:
-            # Update working_system first if provided (affects time_range)
+        if entry.date_day == day and entry.date_month == month and entry.date_year == year:
             if update.working_system is not None:
                 entry.working_system = update.working_system
                 entry.time_range = get_time_range_for_system(update.working_system)
-            
-            # Update other fields
+
             if update.category is not None:
                 entry.category = update.category
             if update.state is not None:
                 entry.state = update.state
-            if update.start_time is not None:
-                entry.start_time = update.start_time
-            if update.end_time is not None:
-                entry.end_time = update.end_time
+            if update.start_hour is not None:
+                entry.start_hour = update.start_hour
+            if update.start_minute is not None:
+                entry.start_minute = update.start_minute
+            if update.end_hour is not None:
+                entry.end_hour = update.end_hour
+            if update.end_minute is not None:
+                entry.end_minute = update.end_minute
             if update.work_contents is not None:
                 entry.work_contents = update.work_contents
-            
-            # Recalculate times only if both start and end time exist
-            if entry.start_time and entry.end_time:
+
+            if entry.start_hour is not None and entry.end_hour is not None:
                 entry = calculate_times(entry)
-            
+
             updated_entry = entry
             break
-    
+
     if updated_entry is None:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
-    # Save to storage
+
     key = f"{year}-{month:02d}-{half}"
     memory_storage[key] = entries
     await save_attendance_to_db(year, month, half, entries)
-    
+
     return updated_entry
 
-@app.post("/api/attendance/{date}/register")
-async def register_attendance(date: str):
+
+@app.post("/api/attendance/register")
+async def register_attendance(request: AttendanceDateRequest):
     """Register attendance for a specific date"""
-    date_obj = datetime.strptime(date, "%Y-%m-%d")
-    year = date_obj.year
-    month = date_obj.month
-    day = date_obj.day
+    year = request.date_year
+    month = request.date_month
+    day = request.date_day
     half = "first" if day <= 15 else "second"
-    
-    entries = await get_attendance(year, month, half)
-    
+
+    period_request = AttendancePeriodRequest(year=year, month=month, half=half)
+    entries = await get_attendance(period_request)
+
     for entry in entries:
-        if entry.date == date:
+        if entry.date_day == day and entry.date_month == month and entry.date_year == year:
             entry.category = "通常"
             entry.state = ""
-            
-            # If no times are set, generate realistic default times based on working system
-            if not entry.start_time or not entry.end_time:
-                start_time, end_time = generate_realistic_times(entry.working_system)
-                entry.start_time = start_time
-                entry.end_time = end_time
+
+            if entry.start_hour is None or entry.end_hour is None:
+                start_hour, start_minute, end_hour, end_minute = generate_realistic_times_with_variations(entry.working_system)
+                entry.start_hour = start_hour
+                entry.start_minute = start_minute
+                entry.end_hour = end_hour
+                entry.end_minute = end_minute
                 entry = calculate_times(entry)
-            
+
             key = f"{year}-{month:02d}-{half}"
             memory_storage[key] = entries
             await save_attendance_to_db(year, month, half, entries)
-            
+
             return {"message": "Registered successfully", "entry": entry}
-    
+
     raise HTTPException(status_code=404, detail="Entry not found")
 
-@app.post("/api/attendance/{date}/holiday")
-async def register_holiday(date: str):
+@app.post("/api/attendance/holiday")
+async def register_holiday(request: AttendanceDateRequest):
     """Register holiday for a specific date"""
-    date_obj = datetime.strptime(date, "%Y-%m-%d")
-    year = date_obj.year
-    month = date_obj.month
-    day = date_obj.day
+    year = request.date_year
+    month = request.date_month
+    day = request.date_day
     half = "first" if day <= 15 else "second"
-    
-    entries = await get_attendance(year, month, half)
-    
+
+    period_request = AttendancePeriodRequest(year=year, month=month, half=half)
+    entries = await get_attendance(period_request)
+
     for entry in entries:
-        if entry.date == date:
+        if entry.date_day == day and entry.date_month == month and entry.date_year == year:
             entry.category = "休暇"
             entry.state = ""
-            
+
             key = f"{year}-{month:02d}-{half}"
             memory_storage[key] = entries
             await save_attendance_to_db(year, month, half, entries)
-            
+
             return {"message": "Holiday registered successfully", "entry": entry}
-    
+
     raise HTTPException(status_code=404, detail="Entry not found")
 
-@app.post("/api/attendance/{date}/approve")
-async def approve_attendance(date: str):
+@app.post("/api/attendance/approve")
+async def approve_attendance(request: AttendanceDateRequest):
     """Approve attendance entry"""
-    date_obj = datetime.strptime(date, "%Y-%m-%d")
-    year = date_obj.year
-    month = date_obj.month
-    day = date_obj.day
+    year = request.date_year
+    month = request.date_month
+    day = request.date_day
     half = "first" if day <= 15 else "second"
-    
-    entries = await get_attendance(year, month, half)
-    
+
+    period_request = AttendancePeriodRequest(year=year, month=month, half=half)
+    entries = await get_attendance(period_request)
+
     for entry in entries:
-        if entry.date == date:
+        if entry.date_day == day and entry.date_month == month and entry.date_year == year:
             entry.state = "承認済"
-            
+
             key = f"{year}-{month:02d}-{half}"
             memory_storage[key] = entries
             await save_attendance_to_db(year, month, half, entries)
-            
+
             return {"message": "Approved successfully", "entry": entry}
-    
+
     raise HTTPException(status_code=404, detail="Entry not found")
 
 if __name__ == "__main__":
