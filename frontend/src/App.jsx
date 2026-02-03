@@ -100,28 +100,34 @@ function App() {
     loadData();
   }, [currentDate, half]);
 
-  const loadData = async () => {
-    setLoading(true);
-    try {
-      const year = currentDate.getFullYear();
-      const month = currentDate.getMonth() + 1;
-      
-      const [attendanceRes, employeeRes] = await Promise.all([
-        fetch(`${API_URL}/attendance/${year}/${month}/${half}`),
-        fetch(`${API_URL}/employee`)
-      ]);
+const loadData = async () => {
+  setLoading(true);
+  try {
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth() + 1;
+    
+    const [attendanceRes, employeeRes] = await Promise.all([
+      fetch(`${API_URL}/attendance/${year}/${month}/${half}`),
+      fetch(`${API_URL}/employee`)
+    ]);
 
-      const attendance = await attendanceRes.json();
-      const employee = await employeeRes.json();
+    let attendance = await attendanceRes.json();
+    const employee = await employeeRes.json();
 
-      setAttendanceData(attendance);
-      setEmployeeInfo(employee);
-    } catch (error) {
-      console.error('Error loading data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+    // Ensure entries with categories have pending state
+    attendance = attendance.map(entry => ({
+      ...entry,
+      state: entry.category ? (entry.state || '未承認') : entry.state
+    }));
+
+    setAttendanceData(attendance);
+    setEmployeeInfo(employee);
+  } catch (error) {
+    console.error('Error loading data:', error);
+  } finally {
+    setLoading(false);
+  }
+};
 
   const navigateHalf = (direction) => {
     const newDate = new Date(currentDate);
@@ -143,50 +149,83 @@ function App() {
     setCurrentDate(newDate);
   };
 
-  const handleRegister = async (date) => {
-    try {
-      const response = await fetch(`${API_URL}/attendance/${date}/register`, { method: 'POST' });
-      const result = await response.json();
-      
-      // Update local state with the registered entry
-      setAttendanceData(prevData => 
-        prevData.map(entry => 
-          entry.date === date 
-            ? result.entry
-            : entry
-        )
-      );
-    } catch (error) {
-      console.error('Error registering:', error);
-    }
-  };
+const handleRegister = async (date) => {
+  // Check if date is today or future
+  const today = new Date().toISOString().split('T')[0];
+  if (new Date(date) > new Date(today)) {
+    alert('Cannot apply for future dates');
+    return;
+  }
 
-  const handleHoliday = async (date) => {
-    try {
-      const response = await fetch(`${API_URL}/attendance/${date}/holiday`, { method: 'POST' });
-      const result = await response.json();
-      
-      // Update local state with the holiday entry
-      setAttendanceData(prevData => 
-        prevData.map(entry => 
-          entry.date === date 
-            ? result.entry
-            : entry
-        )
-      );
-    } catch (error) {
-      console.error('Error registering holiday:', error);
-    }
-  };
+  try {
+    const response = await fetch(`${API_URL}/attendance/${date}/register`, { method: 'POST' });
+    const result = await response.json();
+    
+    // Ensure state is set to pending after registration
+    const updatedEntry = {
+      ...result.entry,
+      state: result.entry.state || '未承認' // Set to pending if not already set
+    };
+    
+    // Update local state with the registered entry
+    setAttendanceData(prevData => 
+      prevData.map(entry => 
+        entry.date === date 
+          ? updatedEntry
+          : entry
+      )
+    );
+  } catch (error) {
+    console.error('Error registering:', error);
+  }
+};
 
-  const handleInputChange = async (date, field, value) => {
+const handleHoliday = async (date) => {
+  // Check if date is today or future
+  const today = new Date().toISOString().split('T')[0];
+  if (new Date(date) > new Date(today)) {
+    alert('Cannot apply for future dates');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_URL}/attendance/${date}/holiday`, { method: 'POST' });
+    const result = await response.json();
+    
+    // Ensure state is set to pending after holiday registration
+    const updatedEntry = {
+      ...result.entry,
+      state: result.entry.state || '未承認' // Set to pending if not already set
+    };
+    
+    // Update local state with the holiday entry
+    setAttendanceData(prevData => 
+      prevData.map(entry => 
+        entry.date === date 
+          ? updatedEntry
+          : entry
+      )
+    );
+  } catch (error) {
+    console.error('Error registering holiday:', error);
+  }
+};
+
+const handleInputChange = async (date, field, value) => {
+  // Check if entry is approved
+  const entry = attendanceData.find(e => e.date === date);
+  if (entry?.state === '承認済') {
+    alert('Cannot modify after approval');
+    return;
+  }
+    
     try {
       // Update local state immediately to prevent focus loss and flickering
       setAttendanceData(prevData => 
-        prevData.map(entry => 
-          entry.date === date 
-            ? { ...entry, [field]: value }
-            : entry
+        prevData.map(item => 
+          item.date === date 
+            ? { ...item, [field]: value }
+            : item
         )
       );
       
@@ -202,10 +241,10 @@ function App() {
       
       // Update local state with calculated fields (without reloading everything)
       setAttendanceData(prevData => 
-        prevData.map(entry => 
-          entry.date === date 
+        prevData.map(item => 
+          item.date === date 
             ? updatedEntry
-            : entry
+            : item
         )
       );
     } catch (error) {
@@ -268,31 +307,18 @@ function App() {
 
   return (
     <div className="min-h-screen bg-white">
-      {/* Navbar */}
-      <nav className="bg-gradient-to-r from-primary-dark to-primary text-black shadow-lg border-b-4 border-accent sticky top-0 z-50">
-        <div className="max-w-[1600px] mx-auto flex items-center">
-          <div className="flex flex-1">
-            {[1, 2, 3, 4, 5].map((i) => (
-              <button
-                key={i}
-                className="px-8 py-4 text-black hover:bg-white/10 transition-all duration-300 border-r border-white/10 text-sm font-medium relative group"
-              >
-                Menu {i}
-                <span className="absolute bottom-0 left-0 w-0 h-1 bg-accent-light transition-all duration-300 group-hover:w-full"></span>
-              </button>
-            ))}
-          </div>
-          <button
-            onClick={() => setLang(lang === 'ja' ? 'en' : 'ja')}
-            className="mx-5 px-6 py-3 bg-white/15 border border-white/30 text-black rounded-lg hover:bg-white/25 transition-all duration-300 font-mono text-sm font-medium hover:-translate-y-0.5"
-          >
-            {lang === 'ja' ? 'EN' : '日本語'}
-          </button>
-        </div>
-      </nav>
+      {/* Internationalization Button Only */}
+      <div className="fixed top-4 right-4 z-50">
+        <button
+          onClick={() => setLang(lang === 'ja' ? 'en' : 'ja')}
+          className="px-6 py-3 bg-white border border-gray-300 rounded-lg text-black shadow-md hover:bg-gray-50 transition-all duration-300 font-mono text-sm font-medium"
+        >
+          {lang === 'ja' ? 'EN' : '日本語'}
+        </button>
+      </div>
 
       {/* Main Content */}
-      <div className="max-w-[1600px] mx-auto p-8">
+      <div className="max-w-[1600px] mx-auto p-8 pt-16">
         {/* Controls */}
         <div className="bg-white rounded-xl shadow-lg p-7 mb-6 border-l-4 border-primary">
           <div className="flex flex-wrap gap-6 items-center">
@@ -406,7 +432,11 @@ function App() {
                 </thead>
                 <tbody className="bg-white">
                   {attendanceData.map((entry, idx) => {
+                    const isApplied = !!entry.category; // Entry is applied if category exists
                     const isApproved = entry.state === '承認済';
+                    const today = new Date().toISOString().split('T')[0];
+                    const isTodayOrPast = new Date(entry.date) <= new Date(today);
+
                     return (
                       <tr
                         key={entry.id}
@@ -414,22 +444,26 @@ function App() {
                       >
                         {/* Operations */}
                         <td className="px-3 py-3.5 border-r border-gray-200">
-                          <div className="flex gap-1.5">
-                            <button
-                              onClick={() => handleRegister(entry.date)}
-                              disabled={isApproved}
-                              className="px-4 py-2 bg-primary text-black rounded-md text-xs font-medium hover:bg-primary-dark transition-all duration-300 shadow-sm hover:-translate-y-0.5 hover:shadow-md disabled:bg-gray-400 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-sm"
-                            >
-                              {t.register}
-                            </button>
-                            <button
-                              onClick={() => handleHoliday(entry.date)}
-                              disabled={isApproved}
-                              className="px-4 py-2 bg-accent text-black rounded-md text-xs font-medium hover:bg-accent-light transition-all duration-300 shadow-sm hover:-translate-y-0.5 hover:shadow-md disabled:bg-gray-400 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-sm"
-                            >
-                              {t.holiday}
-                            </button>
-                          </div>
+                          {isTodayOrPast && !isApproved ? (
+                            <div className="flex gap-1.5">
+                              <button
+                                onClick={() => handleRegister(entry.date)}
+                                className="px-4 py-2 bg-primary text-black rounded-md text-xs font-medium hover:bg-primary-dark transition-all duration-300 shadow-sm hover:-translate-y-0.5 hover:shadow-md"
+                              >
+                                {t.register}
+                              </button>
+                              <button
+                                onClick={() => handleHoliday(entry.date)}
+                                className="px-4 py-2 bg-accent text-black rounded-md text-xs font-medium hover:bg-accent-light transition-all duration-300 shadow-sm hover:-translate-y-0.5 hover:shadow-md"
+                              >
+                                {t.holiday}
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="text-gray-400 text-xs italic">
+                              {isApproved ? 'Approved' : 'Not available'}
+                            </div>
+                          )}
                         </td>
 
                         {/* Category */}
@@ -441,23 +475,19 @@ function App() {
                           )}
                         </td>
 
-                        {/* State - Now selectable */}
+                        {/* State - Controlled by system, not user */}
                         <td className="px-3 py-3.5 border-r border-gray-200">
-                          <select
-                            value={entry.state || ""}
-                            onChange={(e) => handleInputChange(entry.date, 'state', e.target.value)}
-                            className={`px-2.5 py-1 rounded text-xs font-medium border focus:outline-none focus:ring-2 transition-all cursor-pointer ${
+                          {entry.state ? (
+                            <span className={`px-2.5 py-1 rounded text-xs font-medium ${
                               entry.state === '承認済' 
-                                ? 'bg-green-100 text-green-800 border-green-200 focus:border-green-400 focus:ring-green-200' 
-                                : entry.state === '未承認'
-                                ? 'bg-yellow-100 text-yellow-800 border-yellow-200 focus:border-yellow-400 focus:ring-yellow-200'
-                                : 'bg-gray-100 text-gray-600 border-gray-200 focus:border-gray-400 focus:ring-gray-200'
-                            }`}
-                          >
-                            <option value="">-</option>
-                            <option value="未承認">{translateState('未承認')}</option>
-                            <option value="承認済">{translateState('承認済')}</option>
-                          </select>
+                                ? 'bg-green-100 text-green-800' 
+                                : 'bg-yellow-100 text-yellow-800'
+                            }`}>
+                              {translateState(entry.state)}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400 text-xs italic">-</span>
+                          )}
                         </td>
 
                         {/* Date */}
@@ -487,7 +517,10 @@ function App() {
                               entry.working_system === 'C' ? '0700' : '0845'
                             }
                             maxLength="4"
-                            className="w-[70px] px-2 py-1.5 border border-gray-300 rounded text-center font-mono text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                            disabled={isApproved} // Disabled only when approved
+                            className={`w-[70px] px-2 py-1.5 border border-gray-300 rounded text-center font-mono text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all ${
+                              isApproved ? 'bg-gray-100 cursor-not-allowed' : ''
+                            }`}
                           />
                         </td>
 
@@ -506,21 +539,27 @@ function App() {
                               entry.working_system === 'C' ? '1600' : '1715'
                             }
                             maxLength="4"
-                            className="w-[70px] px-2 py-1.5 border border-gray-300 rounded text-center font-mono text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                            disabled={isApproved} // Disabled only when approved
+                            className={`w-[70px] px-2 py-1.5 border border-gray-300 rounded text-center font-mono text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all ${
+                              isApproved ? 'bg-gray-100 cursor-not-allowed' : ''
+                            }`}
                           />
                         </td>
 
-                        {/* Time Range */}
+                        {/* Time Range - System controlled */}
                         <td className="px-3 py-3.5 border-r border-gray-200 font-mono text-sm text-gray-900">
-                          {entry.time_range}
+                          {entry.time_range || '-'}
                         </td>
 
-                        {/* Working System - Now selectable */}
+                        {/* Working System - Selectable */}
                         <td className="px-3 py-3.5 border-r border-gray-200">
                           <select
                             value={entry.working_system}
                             onChange={(e) => handleInputChange(entry.date, 'working_system', e.target.value)}
-                            className="w-full px-2 py-1.5 border border-gray-300 rounded text-center font-mono text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all cursor-pointer bg-white"
+                            disabled={isApproved} // Disabled only when approved
+                            className={`w-full px-2 py-1.5 border border-gray-300 rounded text-center font-mono text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all cursor-pointer ${
+                              isApproved ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'
+                            }`}
                           >
                             <option value="A">A</option>
                             <option value="B">B</option>
@@ -559,7 +598,10 @@ function App() {
                             type="text"
                             value={entry.work_contents}
                             onChange={(e) => handleInputChange(entry.date, 'work_contents', e.target.value)}
-                            className="w-full min-w-[150px] px-2 py-1.5 border border-gray-300 rounded text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                            disabled={isApproved} // Disabled only when approved
+                            className={`w-full min-w-[150px] px-2 py-1.5 border border-gray-300 rounded text-sm text-gray-900 focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all ${
+                              isApproved ? 'bg-gray-100 cursor-not-allowed' : ''
+                            }`}
                           />
                         </td>
 
