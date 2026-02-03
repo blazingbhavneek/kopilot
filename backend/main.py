@@ -37,7 +37,7 @@ class AttendanceEntry(BaseModel):
     id: int
     date: str
     day: str
-    category: Literal["通常", "在宅", "休暇", ""] = ""
+    category: Literal["通常", "休暇", ""] = ""
     state: Literal["", "未承認", "承認済"] = ""
     start_time: str = ""
     end_time: str = ""
@@ -84,6 +84,159 @@ async def shutdown_db_client():
     if client:
         client.close()
 
+# AFTER CHANGES
+def generate_realistic_times_with_variations(working_system: str) -> tuple[str, str]:
+    """Generate realistic start and end times with specific variations for human entry"""
+    # Get base times for the system
+    time_range = get_time_range_for_system(working_system)
+    expected_start, expected_end = time_range.split('-')
+    exp_start_hour, exp_start_min = int(expected_start.split(':')[0]), int(expected_start.split(':')[1])
+    exp_end_hour, exp_end_min = int(expected_end.split(':')[0]), int(expected_end.split(':')[1])
+    
+    # Generate start time with specific variation for human entry 
+    # More probability of coming early (-30min to +5min)
+    early_options = list(range(-30, 6))  # -30 to -1 has higher chance
+    late_options = list(range(-5, 1))   # -5 to 0 has normal chance
+    # Combine options to give more weight to early arrivals
+    start_variation = choice(early_options + late_options)
+    start_total_min = exp_start_hour * 60 + exp_start_min + start_variation
+    start_hour = start_total_min // 60
+    start_min = start_total_min % 60
+    start_time = f"{start_hour:02d}{start_min:02d}"
+    
+    # Generate end time with variation for overtime possibilities
+    # More probability of overtime (-5min to +2 hours)
+    end_variation_options = [-5, -3, -1, 0, 0, 0, 5, 10, 15, 30, 45, 60, 90, 120]
+    end_variation = choice(end_variation_options)
+    end_total_min = exp_end_hour * 60 + exp_end_min + end_variation
+    end_hour = end_total_min // 60
+    end_min = end_total_min % 60
+    end_time = f"{end_hour:02d}{end_min:02d}"
+    
+    return start_time, end_time
+
+def get_time_period_status(date_obj: datetime) -> str:
+    """Determine which time period the date falls into relative to today"""
+    today = datetime.now().date()
+    entry_date = date_obj.date()
+    
+    # Calculate days difference
+    days_diff = (today - entry_date).days
+    
+    if days_diff >= 90:  # -3 months or older
+        return "old"
+    elif days_diff >= 10:  # -3 months to -10 days
+        return "approved"
+    elif days_diff >= 3:  # -10 days to -3 days
+        return "pending"
+    elif days_diff >= 1:  # -3 days to yesterday
+        return "system_only"
+    else:  # Today
+        return "empty"
+
+
+# AFTER CHANGES
+def generate_random_attendance_entry(date_obj: datetime, entry_id: int) -> AttendanceEntry:
+    """Generate random attendance data for a date with different rules based on time period"""
+    date_str = date_obj.strftime("%Y-%m-%d")
+    day_name = get_day_name(date_str, "ja")
+    
+    # Determine if weekend
+    is_weekend = day_name in ['土', '日']
+    
+    # Get time period status
+    period_status = get_time_period_status(date_obj)
+    
+    # Set defaults
+    category = ""
+    state = ""
+    start_time = ""
+    end_time = ""
+    working_system = "A"  # Default to System A as requested
+    
+    if is_weekend:
+        # For all weekends regardless of time period, mark as holiday but not approved by admin
+        category = "休暇"
+        # Weekends remain unapproved as they require admin approval
+        # For old/pending periods, we might want them unapproved; for others leave blank
+        if period_status in ["old", "approved"]:
+            state = "承認済"  # approved by admin
+        else:
+            state = ""  # For recent periods, no approval needed yet
+    else:
+        # It's a weekday, apply period-specific rules
+        if period_status == "old":
+            # -3 months to -10 days: System timing A with human input time matching system time (approved and non-editable)
+            category = choice(['通常'])  # Work or work from home
+            start_time, end_time = generate_realistic_times_with_variations(working_system)
+            state = "承認済"  # Approved and non-editable
+        
+        elif period_status == "approved":
+            # -3 months to -10 days: Same as old period
+            category = choice(['通常'])  # Work or work from home
+            start_time, end_time = generate_realistic_times_with_variations(working_system)
+            state = "承認済"  # Approved and non-editable
+        
+        elif period_status == "pending":
+            # -10 days to -3 days: Realistic human entry times, editable since not approved
+            category = choice(['通常'])  # Work or work from home
+            start_time, end_time = generate_realistic_times_with_variations(working_system)
+            state = "未承認"  # Not approved, editable
+        
+        elif period_status == "system_only":
+            # -3 days to yesterday: Only system-generated times, non-editable
+            category = choice(['通常'])  # Work or work from home
+            start_time, end_time = generate_realistic_times_with_variations(working_system)
+            state = ""  # No approval status
+        
+        elif period_status == "empty":
+            # Today: Fully empty since PC hasn't shut down yet
+            pass  # Leave everything as default empty values
+    
+    # Random work contents (for applicable periods)
+    work_contents_options = [
+        '',
+        'プロジェクトA作業',
+        '会議対応',
+        '資料作成',
+        '顧客対応',
+        'システム開発',
+    ]
+    work_contents = choice(work_contents_options) if start_time or end_time else ""
+    
+    entry = AttendanceEntry(
+        id=entry_id,
+        date=date_str,
+        day=day_name,
+        category=category,
+        state=state,
+        start_time=start_time,
+        end_time=end_time,
+        time_range=get_time_range_for_system(working_system),
+        working_system=working_system,
+        work_contents=work_contents,
+    )
+    
+    # Calculate times if start and end are present
+    if start_time and end_time:
+        entry = calculate_times(entry)
+    
+    return entry
+
+# AUTO DATA MAKER FLOW SECTION (Can be removed later)
+# This section generates false data only when there is no data in MongoDB to pull from
+async def check_and_generate_auto_data(year: int, month: int, half: str) -> bool:
+    """Check if data exists in MongoDB and generate auto data if none exists"""
+    existing_data = await get_attendance_from_db(year, month, half)
+    
+    if existing_data is None:
+        # Generate auto data since no data exists in MongoDB
+        entries = generate_attendance_data(year, month, half)
+        await save_attendance_to_db(year, month, half, entries)
+        return True  # Data was generated
+    
+    return False  # Data already existed, no need to generate
+
 def get_day_name(date_str: str, lang: str = "ja") -> str:
     """Get day of week name"""
     date = datetime.strptime(date_str, "%Y-%m-%d")
@@ -97,31 +250,6 @@ def get_time_range_for_system(system: str) -> str:
     """Get time range based on working system"""
     return WORKING_SYSTEMS.get(system, "8:45-17:15")
 
-def generate_realistic_times(working_system: str) -> tuple[str, str]:
-    """Generate realistic start and end times with random variations near the expected times"""
-    # Get base times for the system
-    time_range = get_time_range_for_system(working_system)
-    expected_start, expected_end = time_range.split('-')
-    exp_start_hour, exp_start_min = int(expected_start.split(':')[0]), int(expected_start.split(':')[1])
-    exp_end_hour, exp_end_min = int(expected_end.split(':')[0]), int(expected_end.split(':')[1])
-    
-    # Generate start time with slight variation (-5 to +10 minutes)
-    start_variation = randint(-5, 10)
-    start_total_min = exp_start_hour * 60 + exp_start_min + start_variation
-    start_hour = start_total_min // 60
-    start_min = start_total_min % 60
-    start_time = f"{start_hour:02d}{start_min:02d}"
-    
-    # Generate end time with variation (-5 to +120 minutes for possible overtime)
-    # Most common: on time or slightly late
-    end_variation_options = [-5, 0, 0, 0, 5, 10, 15, 30, 45, 60, 90, 120]
-    end_variation = choice(end_variation_options)
-    end_total_min = exp_end_hour * 60 + exp_end_min + end_variation
-    end_hour = end_total_min // 60
-    end_min = end_total_min % 60
-    end_time = f"{end_hour:02d}{end_min:02d}"
-    
-    return start_time, end_time
 
 def calculate_rest_time(start: str, end: str, working_system: str = "A") -> int:
     """Calculate rest time in minutes based on working hours and system"""
@@ -222,65 +350,6 @@ def calculate_times(entry: AttendanceEntry) -> AttendanceEntry:
     
     return entry
 
-def generate_random_attendance_entry(date_obj: datetime, entry_id: int) -> AttendanceEntry:
-    """Generate random attendance data for a date"""
-    date_str = date_obj.strftime("%Y-%m-%d")
-    day_name = get_day_name(date_str, "ja")
-    
-    # Determine if weekend
-    is_weekend = day_name in ['土', '日']
-    
-    # Random category selection
-    if is_weekend:
-        # Weekends are usually holidays
-        category = choice(['休暇', '休暇', ''])
-    else:
-        category = choice(['通常', '通常', '通常', '在宅', ''])
-    
-    # Random working system
-    working_system = choice(['A', 'A', 'A', 'B', 'C'])  # A is most common
-    
-    # Generate times based on category
-    if category == '休暇' or category == '':
-        start_time = ""
-        end_time = ""
-        state = ""
-    else:
-        # Generate realistic times with variations
-        start_time, end_time = generate_realistic_times(working_system)
-        
-        # Random state (some approved, some pending, some empty)
-        state = choice(['承認済', '承認済', '未承認', ''])
-    
-    # Random work contents
-    work_contents_options = [
-        '',
-        'プロジェクトA作業',
-        '会議対応',
-        '資料作成',
-        '顧客対応',
-        'システム開発',
-    ]
-    work_contents = choice(work_contents_options)
-    
-    entry = AttendanceEntry(
-        id=entry_id,
-        date=date_str,
-        day=day_name,
-        category=category,
-        state=state,
-        start_time=start_time,
-        end_time=end_time,
-        time_range=get_time_range_for_system(working_system),
-        working_system=working_system,
-        work_contents=work_contents,
-    )
-    
-    # Calculate times if start and end are present
-    if start_time and end_time:
-        entry = calculate_times(entry)
-    
-    return entry
 
 def generate_attendance_data(year: int, month: int, half: Literal["first", "second"]) -> List[AttendanceEntry]:
     """Generate attendance data for a half month period"""
