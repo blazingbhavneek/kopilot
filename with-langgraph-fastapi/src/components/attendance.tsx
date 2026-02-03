@@ -127,7 +127,7 @@ export function AttendanceCard({ state, stats }: AttendanceCardProps) {
             <tbody>
               {entries.map((entry, idx) => (
                 <tr
-                  key={entry.id || idx}
+                  key={`${entry.date_year}-${entry.date_month}-${entry.date_day}-${entry.id ?? idx}`} 
                   className="border-b border-white/5 hover:bg-white/5 transition-colors"
                 >
                   <td className="px-3 py-2.5 text-white font-mono text-xs">

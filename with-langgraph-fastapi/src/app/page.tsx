@@ -384,7 +384,6 @@ useFrontendTool({
     },
   });
 
-
 useHumanInTheLoop(
   {
     name: "applyAttendance",
@@ -398,7 +397,60 @@ useHumanInTheLoop(
       },
     ],
     render: ({ args, respond, status }) => {
-      const safeRequests = Array.isArray(args.requests) ? args.requests : [];
+      console.log("=== useHumanInTheLoop DEBUG ===");
+      console.log("Full args object:", JSON.stringify(args, null, 2));
+      console.log("args.requests:", args?.requests);
+      console.log("typeof args.requests:", typeof args?.requests);
+      
+      let safeRequests: ApplyRequest[] = [];
+      
+      try {
+        const rawRequests = args?.requests;
+        
+        if (rawRequests) {
+          // Case 1: It's a string that needs to be parsed
+          if (typeof rawRequests === 'string') {
+            console.log("Parsing requests from JSON string");
+            const parsed = JSON.parse(rawRequests);
+            if (Array.isArray(parsed)) {
+              safeRequests = parsed;
+            } else if (typeof parsed === 'object' && parsed.date_day) {
+              safeRequests = [parsed];
+            }
+          }
+          // Case 2: It's already an array
+          else if (Array.isArray(rawRequests)) {
+            console.log("Requests is already an array");
+            safeRequests = rawRequests;
+          }
+          // Case 3: It's a single object
+          else if (typeof rawRequests === 'object' && rawRequests.date_day) {
+            console.log("Requests is a single object");
+            safeRequests = [rawRequests];
+          }
+        }
+        
+        // Fallback: check if args itself has date fields (single request at top level)
+        if (safeRequests.length === 0 && args?.date_day && args?.date_month && args?.date_year) {
+          console.log("Found request fields directly in args");
+          safeRequests = [{
+            date_day: args.date_day,
+            date_month: args.date_month,
+            date_year: args.date_year,
+            category: args.category || "通常",
+            working_system: args.working_system || "A",
+            start_hour: args.start_hour,
+            start_minute: args.start_minute,
+            end_hour: args.end_hour,
+            end_minute: args.end_minute,
+            work_contents: args.work_contents,
+          }];
+        }
+      } catch (parseError) {
+        console.error("Error parsing requests:", parseError);
+      }
+
+      console.log("Final safeRequests:", safeRequests);
 
       return (
         <ApplyAttendanceCard
@@ -407,48 +459,87 @@ useHumanInTheLoop(
           status={status}
           respond={respond}
           onSuccess={async (updatedEntries) => {
-            try {
-              console.log("Updating entries:", updatedEntries);
+            console.log("=== onSuccess called ===");
+            console.log("Entries to update:", updatedEntries);
 
-              for (const entry of updatedEntries) {
+            if (!updatedEntries || updatedEntries.length === 0) {
+              console.warn("No entries to update");
+              return;
+            }
+
+            // Make API calls for each entry
+            for (const entry of updatedEntries) {
+              console.log("Sending update request for:", entry);
+              
+              try {
+                const requestBody = {
+                  date_day: entry.date_day,
+                  date_month: entry.date_month,
+                  date_year: entry.date_year,
+                  category: entry.category,
+                  state: entry.state || "未承認",
+                  start_hour: entry.start_hour,
+                  start_minute: entry.start_minute,
+                  end_hour: entry.end_hour,
+                  end_minute: entry.end_minute,
+                  work_contents: entry.work_contents,
+                  working_system: entry.working_system || "A",
+                };
+                
+                console.log("Request body:", JSON.stringify(requestBody, null, 2));
+
                 const response = await fetch(`${API_URL}/attendance/update`, {
                   method: "PUT",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify(entry),
+                  body: JSON.stringify(requestBody),
                 });
 
+                console.log("Response status:", response.status);
+
                 if (!response.ok) {
-                  throw new Error(`Failed to update entry: ${await response.text()}`);
+                  const errorText = await response.text();
+                  console.error("Update failed:", errorText);
+                  throw new Error(`Failed to update entry: ${errorText}`);
                 }
 
-                console.log("Updated entry response:", await response.json());
+                const result = await response.json();
+                console.log("Update successful:", result);
+              } catch (error) {
+                console.error("Error updating entry:", error);
+                throw error;
               }
-
-              const existingEntries = [...state.attendance_entries];
-              updatedEntries.forEach((updated) => {
-                const idx = existingEntries.findIndex(
-                  (e) =>
-                    e.date_day === updated.date_day &&
-                    e.date_month === updated.date_month &&
-                    e.date_year === updated.date_year
-                );
-                if (idx >= 0) {
-                  existingEntries[idx] = transformEntry(updated);
-                } else {
-                  existingEntries.push(transformEntry(updated));
-                }
-              });
-
-              existingEntries.sort((a, b) => {
-                const dateA = new Date(a.date_year, a.date_month - 1, a.date_day);
-                const dateB = new Date(b.date_year, b.date_month - 1, b.date_day);
-                return dateA.getTime() - dateB.getTime();
-              });
-
-              updateEntriesAndStats(existingEntries);
-            } catch (error) {
-              console.error("Error updating entries:", error);
             }
+
+            // Update local state
+            const existingEntries = [...(state?.attendance_entries || [])];
+            
+            updatedEntries.forEach((updated) => {
+              const idx = existingEntries.findIndex(
+                (e) =>
+                  e.date_day === updated.date_day &&
+                  e.date_month === updated.date_month &&
+                  e.date_year === updated.date_year
+              );
+              
+              const transformedEntry = transformEntry({
+                ...updated,
+                state: updated.state || "未承認",
+              });
+              
+              if (idx >= 0) {
+                existingEntries[idx] = transformedEntry;
+              } else {
+                existingEntries.push(transformedEntry);
+              }
+            });
+
+            existingEntries.sort((a, b) => {
+              const dateA = new Date(a.date_year, a.date_month - 1, a.date_day);
+              const dateB = new Date(b.date_year, b.date_month - 1, b.date_day);
+              return dateA.getTime() - dateB.getTime();
+            });
+
+            updateEntriesAndStats(existingEntries);
           }}
         />
       );
@@ -456,7 +547,6 @@ useHumanInTheLoop(
   },
   [themeColor, state, updateEntriesAndStats]
 );
-
 
   return (
     <div
